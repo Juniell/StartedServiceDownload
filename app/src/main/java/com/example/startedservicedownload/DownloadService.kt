@@ -33,12 +33,14 @@ class DownloadService : Service() {
             try {
                 inp = URL(url).openStream()
                 mIcon11 = BitmapFactory.decodeStream(inp)
-                val name = "${UUID.randomUUID()}.png"
+                val uuid = UUID.randomUUID().toString().substring(0, 7)
+                val name = "$uuid.png"
                 out = openFileOutput(name, Context.MODE_PRIVATE)
                 mIcon11.compress(Bitmap.CompressFormat.PNG, 100, out)
 
                 val intent = Intent()
                 val path = "$filesDir/$name"
+                intent.action = "com.example.startedservicedownload.PATH"
                 intent.putExtra("path", path)
                 sendBroadcast(intent)
                 Log.i("path", path)
