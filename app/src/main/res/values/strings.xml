@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">StartedServiceDownload</string>
+    <string name="download_async">Сохранить</string>
+    <string name="enter_url">Введите url картинки</string>
+</resources>
