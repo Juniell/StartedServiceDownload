@@ -1,11 +1,13 @@
 package com.example.startedservicedownload
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.*
 import androidx.appcompat.app.AppCompatActivity
+import com.bumptech.glide.Glide
 import kotlinx.android.synthetic.main.activity_main.*
 
 private const val MSG = 1
@@ -29,21 +31,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("HandlerLeak")
     inner class HandlerReplyMsg : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 MSG -> {
-                    val path = msg.data.getString(PATH)
-                    changePath(path)
+                    val uri = msg.data.getString(PATH)
+                    changeView(uri)
                 }
                 else -> super.handleMessage(msg)
             }
         }
     }
-
-    fun changePath(path: String?) {
-        if (path != null)
-            path_view.text = path
+    fun changeView(uri: String?) {
+        if (uri == "null" || uri == null)
+            path_view.setText(R.string.failed)
+        else {
+            path_view.text = uri
+            Glide.with(this).load(uri).into(imageView)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,11 +59,12 @@ class MainActivity : AppCompatActivity() {
 
         started_btn.setOnClickListener {
             val intent = Intent(this, DownloadService::class.java)
-            intent.putExtra("url",
-                    if (url_text.text.isNotEmpty())
-                        url_text.text.toString()
-                    else
-                        defaultAddress
+            intent.putExtra(
+                "url",
+                if (url_text.text.isNotEmpty())
+                    url_text.text.toString()
+                else
+                    defaultAddress
             )
             startService(intent)
         }

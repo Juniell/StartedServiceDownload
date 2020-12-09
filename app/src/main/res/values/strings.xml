@@ -2,5 +2,6 @@
     <string name="app_name">StartedServiceDownload</string>
     <string name="save_started">Сохранить\n(started service)</string>
     <string name="enter_url">Введите url картинки</string>
+    <string name="failed">Failed</string>
     <string name="save_bound">Сохранить\n(Bound service)</string>
 </resources>
