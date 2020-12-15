@@ -1,114 +1,222 @@
 package com.example.startedservicedownload
 
-import android.annotation.SuppressLint
 import android.app.Service
+import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
+import android.util.Log
+import android.webkit.MimeTypeMap
+import android.webkit.URLUtil
+import kotlinx.coroutines.*
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.lang.ref.WeakReference
 import java.net.URL
-import java.util.*
+import java.net.URLConnection
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val MSG = 1
 private const val URL = "url"
 private const val PATH = "path"
 
+// Задание 3 и 4
 class DownloadService : Service() {
-    private lateinit var mMessenger: Messenger
+    private var count = AtomicInteger(0)
+    private val coroutineJob = Job()
+    private val uiScope = CoroutineScope(Dispatchers.Main + coroutineJob)
+    private val handler = IncomingHandler(WeakReference(this))
+    private val mMessenger: Messenger = Messenger(handler)
 
-    @SuppressLint("HandlerLeak")
-    inner class IncomingHandler : Handler(Looper.getMainLooper()) {
+
+    class IncomingHandler(private val outerClass: WeakReference<DownloadService>) :
+        Handler(Looper.getMainLooper()) {
+        private val job = Job()
+        private val scopeUi = CoroutineScope(Dispatchers.Main + job)
+
         override fun handleMessage(msg: Message) {
+            val replyTo = msg.replyTo
+            val data = msg.data
             when (msg.what) {
-                MSG -> runBlocking {
-                    val url = msg.data.getString(URL)!!
-                    val path = downloadCor(url)
+                MSG -> scopeUi.launch {
+                    withContext(Dispatchers.IO) {
+                        val url = data.getString(URL)
+                        val m = Message.obtain(null, MSG, 0, 0)
+                        var message: String? = null
+                        if (url != null)
+                            message = outerClass.get()?.downloadCor(url)
 
-                    val m = Message.obtain(null, MSG, 0, 0)
-                    m.data = Bundle().apply {
-                        putString(PATH, path)
-                    }
+                        if (message == null)
+                            message = "Failed"
 
-                    try {
-                        msg.replyTo.send(m)
-                    } catch (e: RemoteException) {
-                        e.printStackTrace()
+                        m.data = Bundle().apply { putString(PATH, message) }
+                        try {
+                            replyTo.send(m)
+                        } catch (e: RemoteException) {
+                            Log.e("DownloadServerError", e.message!!)
+                        }
                     }
                 }
                 else -> super.handleMessage(msg)
             }
         }
+
+        fun stopScope() {
+            scopeUi.cancel()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        runBlocking {
-            val url = intent?.extras?.getString("url")!!
-            val path = downloadCor(url)
-            val int = Intent()
-            int.action = "com.example.startedservicedownload.PATH"
-            int.putExtra("path", path)
-            sendBroadcast(int)
+        uiScope.launch {
+            withContext(Dispatchers.IO) {
+                count.incrementAndGet()
+                val int = Intent()
+                var message: String? = null
+                int.action = "com.example.startedservicedownload.PATH"
+                if (intent != null && intent.hasExtra("url")) {
+                    val url = intent.getStringExtra("url")
+
+                    if (url != null)
+                        message = downloadCor(url)
+                }
+
+                if (message == null)
+                    message = "Failed"
+
+                int.putExtra("path", message)
+                sendBroadcast(int)
+            }
+        }.invokeOnCompletion {
+            count.decrementAndGet()
+            if (count.toInt() == 0) {
+                stopSelf(startId)
+            }
         }
-        stopSelf(startId)
-        return START_STICKY
+        return START_REDELIVER_INTENT
     }
 
-    private suspend fun downloadCor(url: String): String? =
+    override fun onDestroy() {
+        handler.stopScope()
+        uiScope.cancel()
+        super.onDestroy()
+    }
+
+    suspend fun downloadCor(url: String): String? =
         withContext(Dispatchers.IO) {
-            var inp: InputStream? = null
             var res: String? = null
             try {
-                inp = URL(url).openStream()
-                val mIcon = BitmapFactory.decodeStream(inp)
-                res = save(mIcon)
+                val connect = URL(url).openConnection()
+                res = save(connect)
             } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                inp?.close()
+                Log.e("DownloadServerError", e.message!!)
             }
             return@withContext res
         }
 
-    private fun save(bitmap: Bitmap): String? {
-        val uuid = UUID.randomUUID().toString().substring(0, 7)
-        val name = "$uuid.png"
+    private fun save(connect: URLConnection): String? {
+        val name = URLUtil.guessFileName(connect.url.toString(), null, null)
+        val type = connect.contentType
+
+        if(!type.contains("image"))
+            return null
 
         val values = ContentValues()
         values.put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-        values.put(MediaStore.MediaColumns.RELATIVE_PATH,  Environment.DIRECTORY_PICTURES)
-        values.put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+        values.put(MediaStore.Images.Media.MIME_TYPE, type)
 
         var stream: OutputStream? = null
         var uri: Uri? = null
+        var inp: InputStream? = null
+        var res: String? = null
         try {
+            inp = connect.getInputStream()
             val contentUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             uri = contentResolver.insert(contentUri, values)
             stream = uri?.let { contentResolver.openOutputStream(it) }
-            if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream))
-                throw IOException()
+            stream?.write(inp.readBytes())
+            res = uri.toString()
         } catch (e: Exception) {
             if (uri != null) {
                 contentResolver.delete(uri, null, null)
-                uri = null
+                res = null
             }
-            e.printStackTrace()
+            Log.e("DownloadServerError", e.message!!)
         } finally {
+            inp?.close()
             stream?.close()
         }
-        return uri.toString()
+        return res
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        mMessenger = Messenger(IncomingHandler())
-        return mMessenger.binder
-    }
+    override fun onBind(intent: Intent?): IBinder? = mMessenger.binder
 }
+
+// Задание 1 и 2.
+//class DownloadService : Service() {
+//    private var count = AtomicInteger(0)
+//    private val coroutineJob = Job()
+//    private val uiScope = CoroutineScope(Dispatchers.Main + coroutineJob)
+//
+//    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+//        uiScope.launch {
+//            withContext(Dispatchers.IO) {
+//                count.incrementAndGet()
+//                val int = Intent()
+//                var message: String? = null
+//                int.action = "com.example.startedservicedownload.PATH"
+//                if (intent != null && intent.hasExtra("url")) {
+//                    val url = intent.getStringExtra("url")
+//
+//                    if (url != null)
+//                        message = downloadCor(url)
+//                }
+//
+//                if (message == null)
+//                    message = "Failed"
+//
+//                int.putExtra("path", message)
+//                sendBroadcast(int)
+//            }
+//        }.invokeOnCompletion {
+//            count.decrementAndGet()
+//            if (count.toInt() == 0) {
+//                stopSelf(startId)
+//            }
+//        }
+//        return START_REDELIVER_INTENT
+//    }
+//
+//    private suspend fun downloadCor(url: String): String? =
+//        withContext(Dispatchers.IO) {
+//            var path: String? = null
+//            var out: FileOutputStream? = null
+//            var inp: InputStream? = null
+//            try {
+//                val connect = URL(url).openConnection()
+//                inp = connect.getInputStream()
+//                val name = URLUtil.guessFileName(connect.url.toString(),null,null)
+//                out = openFileOutput(name, MODE_PRIVATE)
+//                out.write(inp.readBytes())
+//                path = "$filesDir/$name"
+//                Log.i("path", path)
+//            } catch (e: Exception) {
+//                 Log.e("DownloadServerError", e.message!!)
+//            } finally {
+//                inp?.close()
+//                out?.close()
+//            }
+//            return@withContext path
+//        }
+//
+//    override fun onBind(intent: Intent?): IBinder? = null
+//
+//    override fun onDestroy() {
+//        uiScope.cancel()
+//        super.onDestroy()
+//    }
+//}
